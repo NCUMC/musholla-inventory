@@ -25,9 +25,14 @@
       .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
       .online-dot { background-color: #4caf50; }
       .offline-dot { background-color: #f44336; animation: blink 1s infinite; }
+      
+      /* Style untuk Notifikasi Dobel */
+      .alert-section { display: none; margin-top: 20px; background: #ffebee; border: 2px solid #ef5350; padding: 15px; border-radius: 10px; text-align: left; }
+      .alert-title { color: #c62828; font-weight: bold; font-size: 18px; text-align: center; margin-top: 0; margin-bottom: 10px; }
+      .alert-detail { font-size: 14px; margin-bottom: 5px; color: #333; }
+
       @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
-      #result { font-size: 20px; font-weight: bold; margin: 15px 0; }
-      .status-waiting { color: #666; }
+      #result { font-size: 16px; font-weight: bold; margin: 10px 0; color: #666; }
     </style>
   </head>
   <body onclick="unlockAudio()">
@@ -41,7 +46,8 @@
         <div id="syncStatus">✅ ALL SYNCED</div>
       </div>
 
-      <div style="font-size: 14px; font-weight: bold; color: #2e7d32; letter-spacing: 2px; margin-bottom: 15px;">INVENTARIS MUSHOLLA</div>
+      <div style="font-size: 14px; font-weight: bold; color: #2e7d32; letter-spacing: 2px; margin-bottom: 5px;">INVENTARIS MUSHOLLA</div>
+      <div id="dbStatus" style="font-size: 11px; color: #666; margin-bottom: 15px;">Mengambil data sheet...</div>
       
       <div class="controls">
         <label><input type="checkbox" id="mirrorToggle" onchange="toggleMirror()"> Mirror Mode</label>
@@ -49,11 +55,20 @@
 
       <div id="scanner-area">
         <div id="reader"></div>
-        <div id="result" class="status-waiting">Silakan Scan Barcode/QR Barang</div>
+        <div id="result">Silakan Scan Barcode/QR Barang</div>
+      </div>
+
+      <div id="alertSection" class="alert-section">
+        <div class="alert-title">⚠️ ITEM REGISTERED ON INVENTORY</div>
+        <div class="alert-detail"><strong>Kode Unik:</strong> <span id="lblCode"></span></div>
+        <div class="alert-detail"><strong>Kategori:</strong> <span id="lblCategory"></span></div>
+        <div class="alert-detail"><strong>Nama Barang:</strong> <span id="lblListName"></span></div>
+        <div class="alert-detail"><strong>Kondisi saat ini:</strong> <span id="lblDesc"></span></div>
+        <button type="button" class="submit-btn" style="background-color: #c62828;" onclick="resetToScanner()">Scan Barang Lain</button>
       </div>
 
       <div id="formSection" class="form-section">
-        <h3 style="margin-top:0; color:#2e7d32; text-align:center;">Input Detail Barang</h3>
+        <h3 style="margin-top:0; color:#2e7d32; text-align:center;">Input Detail Barang Baru</h3>
         <form id="inventarisForm" onsubmit="submitForm(event)">
           <div class="form-group">
             <label>Kode Unik:</label>
@@ -83,6 +98,7 @@
       // ====================================================================
       const API_URL = "https://script.google.com/macros/s/AKfycbyf9YOwGknFsRFBIjaSSiwPt0UF3SqZpmA74tvakE710jR-V2W4F0ZmGm3boncDSPlm/exec";
 
+      let existingItems = []; // Menyimpan daftar barang yang sudah terdaftar
       let syncQueue = [];
       let isSyncing = false;
       let audioUnlocked = false;
@@ -97,6 +113,7 @@
         if (isOnline) {
           netEl.innerHTML = '<span class="status-dot online-dot"></span> INTERNET: ONLINE';
           document.getElementById('submitBtn').disabled = false;
+          fetchExistingItems(); // Ambil data ulang saat internet kembali online
         } else {
           netEl.innerHTML = '<span class="status-dot offline-dot"></span> INTERNET: OFFLINE';
           document.getElementById('submitBtn').disabled = true;
@@ -104,32 +121,56 @@
         }
       }
 
-      function onScanSuccess(decodedText) {
-        document.getElementById('sndSuccess').play();
-        html5QrcodeScanner.clear();
-        document.getElementById('scanner-area').style.display = 'none';
-        
-        // Input kode barang
-        document.getElementById('itemCode').value = decodedText;
-        
-        // LOGIKA OTOMATIS DETEKSI KATEGORI
-        let hurufDepan = decodedText.charAt(0).toUpperCase();
-        let kategoriTeks = "Lain-lain";
-        
-        if (hurufDepan === 'E') {
-            kategoriTeks = "Electronics";
-        } else if (hurufDepan === 'C') {
-            kategoriTeks = "Cooking Utensils";
-        } else if (hurufDepan === 'M') {
-            kategoriTeks = "Maintenance / Alat Kebersihan";
-        } else if (hurufDepan === 'F') {
-            kategoriTeks = "Furniture";
+      // Fungsi untuk mengambil data barang yang sudah ada di Sheet
+      async function fetchExistingItems() {
+        if (!isOnline) return;
+        try {
+          const res = await fetch(API_URL);
+          existingItems = await res.json();
+          document.getElementById('dbStatus').innerText = `✅ Database Terkoneksi (${existingItems.length} Barang Terdata)`;
+        } catch (e) {
+          document.getElementById('dbStatus').innerText = "⚠️ Gagal memuat database internal.";
+          console.error(e);
         }
-        
-        document.getElementById('itemCategory').value = kategoriTeks;
-        document.getElementById('formSection').style.display = 'block';
-        
-        setTimeout(() => document.getElementById('itemName').focus(), 100);
+      }
+
+      function onScanSuccess(decodedText) {
+        // Cek apakah kode barang sudah ada di list database existingItems
+        const duplicateItem = existingItems.find(item => String(item.id).trim() === String(decodedText).trim());
+
+        if (duplicateItem) {
+          // JIKA DATA DOUBLE
+          document.getElementById('sndError').play();
+          html5QrcodeScanner.clear(); // Matikan kamera sementara
+          document.getElementById('scanner-area').style.display = 'none';
+          
+          // Tampilkan komponen notifikasi merah beserta detail isi barangnya
+          document.getElementById('lblCode').innerText = duplicateItem.id;
+          document.getElementById('lblCategory').innerText = duplicateItem.category;
+          document.getElementById('lblListName').innerText = duplicateItem.name;
+          document.getElementById('lblDesc').innerText = duplicateItem.description || "-";
+          document.getElementById('alertSection').style.display = 'block';
+          
+        } else {
+          // JIKA DATA BARU
+          document.getElementById('sndSuccess').play();
+          html5QrcodeScanner.clear();
+          document.getElementById('scanner-area').style.display = 'none';
+          
+          document.getElementById('itemCode').value = decodedText;
+          
+          // Deteksi kategori otomatis
+          let hurufDepan = decodedText.charAt(0).toUpperCase();
+          let kategoriTeks = "Lain-lain";
+          if (hurufDepan === 'E') kategoriTeks = "Electronics";
+          else if (hurufDepan === 'C') kategoriTeks = "Cooking Utensils";
+          else if (hurufDepan === 'M') kategoriTeks = "Maintenance / Alat Kebersihan";
+          else if (hurufDepan === 'F') kategoriTeks = "Furniture";
+          
+          document.getElementById('itemCategory').value = kategoriTeks;
+          document.getElementById('formSection').style.display = 'block';
+          setTimeout(() => document.getElementById('itemName').focus(), 100);
+        }
       }
 
       function submitForm(event) {
@@ -140,7 +181,12 @@
         const name = document.getElementById('itemName').value;
         const description = document.getElementById('itemDesc').value;
 
-        syncQueue.push({ id, category, name, description });
+        const newItem = { id, category, name, description };
+        
+        // Tambahkan langsung ke memori lokal sementara biar langsung dianggap terdaftar tanpa nunggu sheet selesai update
+        existingItems.push(newItem); 
+        
+        syncQueue.push(newItem);
         updateSyncUI();
         
         resetToScanner();
@@ -163,6 +209,7 @@
           
           syncQueue.shift();
           updateSyncUI();
+          fetchExistingItems(); // Sinkronisasi ulang database lokal dengan sheet terbaru
         } catch (e) { 
           console.error("Gagal sinkronisasi", e); 
           document.getElementById('sndError').play();
@@ -180,6 +227,7 @@
       function resetToScanner() {
         document.getElementById('inventarisForm').reset();
         document.getElementById('formSection').style.display = 'none';
+        document.getElementById('alertSection').style.display = 'none';
         document.getElementById('scanner-area').style.display = 'block';
         
         html5QrcodeScanner = new Html5QrcodeScanner("reader", { fps: 20, qrbox: 250 });
@@ -201,9 +249,11 @@
       }
 
       setInterval(processSyncQueue, 3000);
+      setInterval(fetchExistingItems, 60000); // Update database internal otomatis setiap 1 menit
+      fetchExistingItems(); // Ambil data awal saat web dibuka
 
       var html5QrcodeScanner = new Html5QrcodeScanner("reader", { fps: 20, qrbox: 250 });
       html5QrcodeScanner.render(onScanSuccess);
     </script>
   </body>
-</html> 
+</html>
