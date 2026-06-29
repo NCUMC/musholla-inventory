@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    <style>
+      body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; background-color: #e8f5e9; margin: 0; padding: 15px; }
+      .container { max-width: 500px; margin: auto; background: white; padding: 20px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); box-sizing: border-box; }
+      #reader { width: 100%; border-radius: 10px; overflow: hidden; border: none !important; }
+      #reader.mirror-mode video { transform: scaleX(-1); }
+      
+      .form-section { display: none; margin-top: 20px; text-align: left; background: #f9f9f9; padding: 15px; border-radius: 10px; border: 1px solid #e0e0e0; }
+      .form-group { margin-bottom: 12px; }
+      .form-group label { display: block; font-weight: bold; margin-bottom: 5px; font-size: 14px; color: #2e7d32; }
+      .form-group input { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-size: 16px; }
+      .form-group input[readonly] { background-color: #e8f5e9; font-weight: bold; color: #1b5e20; border: 1px solid #a5d6a7; }
+      
+      .submit-btn { background-color: #2e7d32; color: white; border: none; padding: 12px; width: 100%; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 16px; margin-top: 10px; }
+      .submit-btn:disabled { background-color: #a5d6a7; cursor: not-allowed; }
+      .cancel-btn { background-color: #757575; color: white; border: none; padding: 8px; width: 100%; border-radius: 8px; cursor: pointer; font-size: 14px; margin-top: 5px; }
+
+      .controls { margin-bottom: 15px; padding: 10px; background: #f1f8e9; border-radius: 10px; display: flex; justify-content: center; gap: 20px; font-size: 13px; }
+      .connection-bar { display: flex; justify-content: space-between; align-items: center; padding: 8px 15px; background: #f5f5f5; border-radius: 8px; margin-bottom: 15px; font-size: 12px; font-weight: bold; }
+      .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+      .online-dot { background-color: #4caf50; }
+      .offline-dot { background-color: #f44336; animation: blink 1s infinite; }
+      @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+      #result { font-size: 20px; font-weight: bold; margin: 15px 0; }
+      .status-waiting { color: #666; }
+    </style>
+  </head>
+  <body onclick="unlockAudio()">
+    
+    <audio id="sndSuccess" src="https://assets.mixkit.co/active_storage/sfx/2573/2573-preview.mp3" preload="auto"></audio>
+    <audio id="sndError" src="https://assets.mixkit.co/active_storage/sfx/1110/1110-preview.mp3" preload="auto"></audio>
+
+    <div class="container">
+      <div class="connection-bar">
+        <div id="netStatus"><span class="status-dot online-dot"></span> INTERNET: ONLINE</div>
+        <div id="syncStatus">✅ ALL SYNCED</div>
+      </div>
+
+      <div style="font-size: 14px; font-weight: bold; color: #2e7d32; letter-spacing: 2px; margin-bottom: 15px;">INVENTARIS MUSHOLLA</div>
+      
+      <div class="controls">
+        <label><input type="checkbox" id="mirrorToggle" onchange="toggleMirror()"> Mirror Mode</label>
+      </div>
+
+      <div id="scanner-area">
+        <div id="reader"></div>
+        <div id="result" class="status-waiting">Silakan Scan Barcode/QR Barang</div>
+      </div>
+
+      <div id="formSection" class="form-section">
+        <h3 style="margin-top:0; color:#2e7d32; text-align:center;">Input Detail Barang</h3>
+        <form id="inventarisForm" onsubmit="submitForm(event)">
+          <div class="form-group">
+            <label>Kode Unik:</label>
+            <input type="text" id="itemCode" readonly required>
+          </div>
+          <div class="form-group">
+            <label>Kategori (Otomatis):</label>
+            <input type="text" id="itemCategory" readonly required>
+          </div>
+          <div class="form-group">
+            <label>Nama Barang:</label>
+            <input type="text" id="itemName" placeholder="Misal: Monitor Xiaomi 27 inch" required>
+          </div>
+          <div class="form-group">
+            <label>Keterangan / Kondisi:</label>
+            <input type="text" id="itemDesc" placeholder="Misal: Bagus, Baru, Di ruang utama">
+          </div>
+          <button type="submit" id="submitBtn" class="submit-btn">Simpan ke Google Sheet</button>
+          <button type="button" class="cancel-btn" onclick="resetToScanner()">❌ Batal / Scan Ulang</button>
+        </form>
+      </div>
+    </div>
+
+    <script>
+      // ====================================================================
+      // ⚠️ MASUKKAN URL WEB APP GOOGLE APPS SCRIPT ANDA DI BAWAH INI
+      // ====================================================================
+      const API_URL = "https://script.google.com/macros/s/AKfycbyf9YOwGknFsRFBIjaSSiwPt0UF3SqZpmA74tvakE710jR-V2W4F0ZmGm3boncDSPlm/exec";
+
+      let syncQueue = [];
+      let isSyncing = false;
+      let audioUnlocked = false;
+      let isOnline = true;
+
+      window.addEventListener('online', updateNetStatus);
+      window.addEventListener('offline', updateNetStatus);
+
+      function updateNetStatus() {
+        isOnline = navigator.onLine;
+        const netEl = document.getElementById('netStatus');
+        if (isOnline) {
+          netEl.innerHTML = '<span class="status-dot online-dot"></span> INTERNET: ONLINE';
+          document.getElementById('submitBtn').disabled = false;
+        } else {
+          netEl.innerHTML = '<span class="status-dot offline-dot"></span> INTERNET: OFFLINE';
+          document.getElementById('submitBtn').disabled = true;
+          document.getElementById('syncStatus').innerText = "⚠️ SYNC PAUSED";
+        }
+      }
+
+      function onScanSuccess(decodedText) {
+        document.getElementById('sndSuccess').play();
+        html5QrcodeScanner.clear();
+        document.getElementById('scanner-area').style.display = 'none';
+        
+        // Input kode barang
+        document.getElementById('itemCode').value = decodedText;
+        
+        // LOGIKA OTOMATIS DETEKSI KATEGORI
+        let hurufDepan = decodedText.charAt(0).toUpperCase();
+        let kategoriTeks = "Lain-lain";
+        
+        if (hurufDepan === 'E') {
+            kategoriTeks = "Electronics";
+        } else if (hurufDepan === 'C') {
+            kategoriTeks = "Cooking Utensils";
+        } else if (hurufDepan === 'M') {
+            kategoriTeks = "Maintenance / Alat Kebersihan";
+        } else if (hurufDepan === 'F') {
+            kategoriTeks = "Furniture";
+        }
+        
+        document.getElementById('itemCategory').value = kategoriTeks;
+        document.getElementById('formSection').style.display = 'block';
+        
+        setTimeout(() => document.getElementById('itemName').focus(), 100);
+      }
+
+      function submitForm(event) {
+        event.preventDefault();
+        
+        const id = document.getElementById('itemCode').value;
+        const category = document.getElementById('itemCategory').value;
+        const name = document.getElementById('itemName').value;
+        const description = document.getElementById('itemDesc').value;
+
+        syncQueue.push({ id, category, name, description });
+        updateSyncUI();
+        
+        resetToScanner();
+        processSyncQueue();
+      }
+
+      async function processSyncQueue() {
+        if (syncQueue.length === 0 || !isOnline || isSyncing) return;
+        
+        isSyncing = true;
+        const currentItem = syncQueue[0];
+        
+        try {
+          await fetch(API_URL, {
+            method: "POST",
+            mode: "no-cors",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(currentItem)
+          });
+          
+          syncQueue.shift();
+          updateSyncUI();
+        } catch (e) { 
+          console.error("Gagal sinkronisasi", e); 
+          document.getElementById('sndError').play();
+        } finally {
+          isSyncing = false;
+          if(syncQueue.length > 0) setTimeout(processSyncQueue, 1000);
+        }
+      }
+
+      function updateSyncUI() {
+        const s = document.getElementById('syncStatus');
+        s.innerText = syncQueue.length === 0 ? "✅ ALL SYNCED" : "🔄 PENDING: " + syncQueue.length;
+      }
+
+      function resetToScanner() {
+        document.getElementById('inventarisForm').reset();
+        document.getElementById('formSection').style.display = 'none';
+        document.getElementById('scanner-area').style.display = 'block';
+        
+        html5QrcodeScanner = new Html5QrcodeScanner("reader", { fps: 20, qrbox: 250 });
+        html5QrcodeScanner.render(onScanSuccess);
+      }
+
+      function unlockAudio() {
+        if (audioUnlocked) return;
+        ['sndSuccess', 'sndError'].forEach(id => {
+          const s = document.getElementById(id);
+          s.play(); s.pause(); s.currentTime = 0;
+        });
+        audioUnlocked = true;
+      }
+
+      function toggleMirror() {
+        const reader = document.getElementById('reader');
+        document.getElementById('mirrorToggle').checked ? reader.classList.add('mirror-mode') : reader.classList.remove('mirror-mode');
+      }
+
+      setInterval(processSyncQueue, 3000);
+
+      var html5QrcodeScanner = new Html5QrcodeScanner("reader", { fps: 20, qrbox: 250 });
+      html5QrcodeScanner.render(onScanSuccess);
+    </script>
+  </body>
+</html>
